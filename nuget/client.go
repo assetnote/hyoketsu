@@ -396,6 +396,8 @@ func (c *Client) HashBackfill(inDir, outDir string, progress func(done, total in
 		}
 	}
 
+	totalAll := len(pkgSet)
+
 	// Skip already-hashed packages
 	hashedFiles, _ := filepath.Glob(filepath.Join(outDir, "hashed_*.jsonl"))
 	for _, f := range hashedFiles {
@@ -413,7 +415,8 @@ func (c *Client) HashBackfill(inDir, outDir string, progress func(done, total in
 		packages = append(packages, pv)
 	}
 
-	total := len(packages)
+	alreadyDone := totalAll - len(packages)
+	total := totalAll
 	if total == 0 {
 		fmt.Println("No packages to hash")
 		return nil
@@ -457,7 +460,7 @@ func (c *Client) HashBackfill(inDir, outDir string, progress func(done, total in
 				}
 				n := done.Add(1)
 				if progress != nil && n%100 == 0 {
-					progress(int(n), total)
+					progress(alreadyDone+int(n), total)
 				}
 			}
 		}()

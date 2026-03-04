@@ -5,14 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"hyoketsu/db"
 	"hyoketsu/scanner"
@@ -21,13 +17,12 @@ import (
 )
 
 var (
-	jsonOutput    bool
-	unknownOnly   bool
-	dotnetOnly    bool
-	dedup         bool
-	hashOnly      bool
-	filenameOnly  bool
-	remoteURL     string
+	jsonOutput  bool
+	unknownOnly bool
+	knownOnly   bool
+	dotnetOnly  bool
+	dedup       bool
+	remoteURL   string
 )
 
 var scanCmd = &cobra.Command{
@@ -118,7 +113,6 @@ func scanRemote(target string) error {
 		return err
 	}
 
-	// Hash everything and send with filenames — server does hash-first, filename-fallback
 	req := make([]remoteLookupFile, len(files))
 	results := make([]scanner.Result, len(files))
 	for i := range files {
@@ -152,7 +146,6 @@ func scanRemote(target string) error {
 		}
 	}
 
-	// Dedup tracking
 	seenHashes := make(map[string]bool)
 	for i := range results {
 		if results[i].Hash != "" {
@@ -168,7 +161,7 @@ func scanRemote(target string) error {
 }
 
 func displayResults(results []scanner.Result) error {
-	// Apply filters
+	unfiltered := results
 	var filtered []scanner.Result
 	for _, r := range results {
 		if unknownOnly && r.Status != "Unknown" {
@@ -180,10 +173,7 @@ func displayResults(results []scanner.Result) error {
 		if dedup && r.Duplicate {
 			continue
 		}
-		if hashOnly && r.MatchedBy != "hash" {
-			continue
-		}
-		if filenameOnly && r.MatchedBy != "filename" {
+		if knownOnly && r.Status != "Known" {
 			continue
 		}
 		filtered = append(filtered, r)
@@ -197,7 +187,7 @@ func displayResults(results []scanner.Result) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "FILENAME\tTYPE\tDOTNET\tSTATUS\tMATCHED\tSOURCE\tPACKAGE\tHASH")
+	fmt.Fprintln(w, "FILENAME\tTYPE\tDOTNET\tSTATUS\tMATCHED BY\tSOURCE\tPACKAGE\tHASH")
 	for _, r := range results {
 		pkg := r.PackageName
 		if pkg == "" {
@@ -208,8 +198,13 @@ func displayResults(results []scanner.Result) error {
 			src = "-"
 		}
 		matched := "-"
-		if r.MatchedBy != "" {
-			matched = r.MatchedBy
+		switch r.MatchedBy {
+		case "hash":
+			matched = "exact hash"
+		case "filename":
+			matched = "name only"
+		case "runtime":
+			matched = "runtime"
 		}
 		dotnet := "-"
 		if r.Type == "dll" {
@@ -227,23 +222,35 @@ func displayResults(results []scanner.Result) error {
 	}
 	w.Flush()
 
-	// Summary
+	fmt.Println()
 	known, unknown := 0, 0
-	for _, r := range results {
+	byHash, byName, byRuntime := 0, 0, 0
+	for _, r := range unfiltered {
 		if r.Status == "Known" {
 			known++
+			switch r.MatchedBy {
+			case "hash":
+				byHash++
+			case "filename":
+				byName++
+			case "runtime":
+				byRuntime++
+			}
 		} else {
 			unknown++
 		}
 	}
-	fmt.Printf("\n%d known, %d unknown out of %d total files\n", known, unknown, known+unknown)
+	total := known + unknown
+	if len(results) < total {
+		fmt.Printf("%d known, %d unknown out of %d total files (showing %d)\n", known, unknown, total, len(results))
+	} else {
+		fmt.Printf("%d known, %d unknown out of %d total files\n", known, unknown, total)
+	}
+	if known > 0 {
+		fmt.Printf("  matched by: %d hash, %d filename, %d runtime\n", byHash, byName, byRuntime)
+	}
 	return nil
 }
-
-const (
-	hyoketsuIndexURL = "https://wordlists-cdn.assetnote.io/hyoketsu/"
-	hyoketsuDBURL    = "https://wordlists-cdn.assetnote.io/hyoketsu/hyoketsu.db"
-)
 
 func ensureDatabase() error {
 	dbPath := db.DefaultDBPath()
@@ -255,7 +262,7 @@ func ensureDatabase() error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "No local database found at %s\n", dbPath)
 		fmt.Fprintf(os.Stderr, "Could not check for remote database: %v\n", err)
-		return fmt.Errorf("no database available; run 'hyoketsu import' to build one locally")
+		return fmt.Errorf("no database available; run 'hyoketsu update' to download or build one")
 	}
 
 	fmt.Printf("No local database found at %s\n", dbPath)
@@ -266,108 +273,18 @@ func ensureDatabase() error {
 	answer, _ := reader.ReadString('\n')
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	if answer != "y" && answer != "yes" {
-		return fmt.Errorf("no database available; run 'hyoketsu import' to build one locally")
+		return fmt.Errorf("no database available; run 'hyoketsu update' to download or build one")
 	}
 
 	return downloadDatabase(dbPath)
 }
 
-func fetchRemoteDBDate() (string, error) {
-	resp, err := http.Get(hyoketsuIndexURL)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	// nginx autoindex format: <a href="hyoketsu.db">hyoketsu.db</a>  DD-Mon-YYYY HH:MM  size
-	re := regexp.MustCompile(`hyoketsu\.db</a>\s+(\d{2}-\w{3}-\d{4})`)
-	matches := re.FindSubmatch(body)
-	if matches == nil {
-		return "", fmt.Errorf("hyoketsu.db not found in remote index")
-	}
-
-	t, err := time.Parse("02-Jan-2006", string(matches[1]))
-	if err != nil {
-		return string(matches[1]), nil
-	}
-	return t.Format("January 2, 2006"), nil
-}
-
-func downloadDatabase(dbPath string) error {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
-	}
-
-	resp, err := http.Get(hyoketsuDBURL)
-	if err != nil {
-		return fmt.Errorf("download database: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %s", resp.Status)
-	}
-
-	tmpPath := dbPath + ".download"
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("create file: %w", err)
-	}
-
-	var reader io.Reader = resp.Body
-	size := resp.ContentLength
-	if size > 0 {
-		fmt.Printf("Downloading database (%.0f MB)...\n", float64(size)/(1024*1024))
-		reader = &progressReader{reader: resp.Body, total: size}
-	} else {
-		fmt.Println("Downloading database...")
-	}
-
-	if _, err := io.Copy(f, reader); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("download interrupted: %w", err)
-	}
-	f.Close()
-
-	if err := os.Rename(tmpPath, dbPath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("move database into place: %w", err)
-	}
-
-	fmt.Println("\nDatabase downloaded successfully.")
-	return nil
-}
-
-type progressReader struct {
-	reader  io.Reader
-	total   int64
-	current int64
-	lastPct int
-}
-
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.reader.Read(p)
-	pr.current += int64(n)
-	pct := int(float64(pr.current) / float64(pr.total) * 100)
-	if pct != pr.lastPct {
-		fmt.Printf("\r  %d%% (%d / %d MB)", pct, pr.current/(1024*1024), pr.total/(1024*1024))
-		pr.lastPct = pct
-	}
-	return n, err
-}
-
 func init() {
 	scanCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	scanCmd.Flags().BoolVar(&unknownOnly, "unknown-only", false, "Show only unknown files")
+	scanCmd.Flags().BoolVar(&knownOnly, "known-only", false, "Show only known files")
 	scanCmd.Flags().BoolVar(&dotnetOnly, "dotnet-only", false, "Show only .NET assemblies")
 	scanCmd.Flags().BoolVar(&dedup, "dedup", false, "Hide duplicate files (by SHA256 hash)")
-	scanCmd.Flags().BoolVar(&hashOnly, "hash", false, "Show only hash-matched files")
-	scanCmd.Flags().BoolVar(&filenameOnly, "filename", false, "Show only filename-matched files")
 	scanCmd.Flags().StringVar(&remoteURL, "remote", "", "Remote server URL (e.g. http://host:8080)")
+	scanCmd.MarkFlagsMutuallyExclusive("unknown-only", "known-only")
 }
