@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -49,6 +50,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
+	// Memory-map the DB so the OS can cache pages efficiently (up to 1GB)
+	db.Exec("PRAGMA mmap_size=1073741824")
+	// Increase page cache to 256MB (negative = KB)
+	db.Exec("PRAGMA cache_size=-262144")
 	if err := Migrate(db); err != nil {
 		db.Close()
 		return nil, err
@@ -58,6 +63,41 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.DB.Close()
+}
+
+// BeginBulkImport sets PRAGMAs for fast bulk inserts. Call EndBulkImport when done.
+func (s *Store) BeginBulkImport() error {
+	for _, pragma := range []string{
+		"PRAGMA synchronous=OFF",
+		"PRAGMA cache_size=-64000", // 64MB
+		"PRAGMA temp_store=MEMORY",
+	} {
+		if _, err := s.DB.Exec(pragma); err != nil {
+			return fmt.Errorf("set %s: %w", pragma, err)
+		}
+	}
+	return nil
+}
+
+// EndBulkImport restores safe PRAGMAs after bulk insert.
+func (s *Store) EndBulkImport() {
+	s.DB.Exec("PRAGMA synchronous=NORMAL")
+	s.DB.Exec("PRAGMA cache_size=-2000")
+}
+
+// IsFileImported checks if a JSONL file has already been imported.
+func (s *Store) IsFileImported(filename string) bool {
+	var count int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM metadata WHERE key = ?`, "imported:"+filename).Scan(&count)
+	return count > 0
+}
+
+// MarkFileImported records that a JSONL file has been imported.
+func (s *Store) MarkFileImported(filename string) error {
+	_, err := s.DB.Exec(
+		`INSERT OR IGNORE INTO metadata (key, value) VALUES (?, '1')`, "imported:"+filename,
+	)
+	return err
 }
 
 func tableForType(fileType string) string {
@@ -123,6 +163,83 @@ func (s *Store) LookupByHash(hash string, fileType string) ([]DLLMatch, error) {
 	}
 	defer rows.Close()
 	return scanMatches(rows)
+}
+
+// BatchLookupByHash looks up multiple hashes at once, returning a map from hash to matches.
+func (s *Store) BatchLookupByHash(hashes []string, fileType string) (map[string][]DLLMatch, error) {
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+	table := tableForType(fileType)
+	result := make(map[string][]DLLMatch, len(hashes))
+
+	// SQLite has a variable limit; batch in groups of 500
+	for i := 0; i < len(hashes); i += 500 {
+		end := i + 500
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+		batch := hashes[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, len(batch))
+		for j, h := range batch {
+			placeholders[j] = "?"
+			args[j] = h
+		}
+		query := fmt.Sprintf(`SELECT dll_name, source, package_name, version, hash FROM %s WHERE hash IN (%s)`,
+			table, strings.Join(placeholders, ","))
+		rows, err := s.DB.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		matches, err := scanMatches(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			result[m.Hash] = append(result[m.Hash], m)
+		}
+	}
+	return result, nil
+}
+
+// BatchLookupByName looks up multiple filenames at once, returning a map from name to matches.
+func (s *Store) BatchLookupByName(names []string, fileType string) (map[string][]DLLMatch, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	table := tableForType(fileType)
+	result := make(map[string][]DLLMatch, len(names))
+
+	for i := 0; i < len(names); i += 500 {
+		end := i + 500
+		if end > len(names) {
+			end = len(names)
+		}
+		batch := names[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, len(batch))
+		for j, n := range batch {
+			placeholders[j] = "?"
+			args[j] = n
+		}
+		query := fmt.Sprintf(`SELECT dll_name, source, package_name, version, hash FROM %s WHERE dll_name IN (%s)`,
+			table, strings.Join(placeholders, ","))
+		rows, err := s.DB.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		matches, err := scanMatches(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			result[m.DLLName] = append(result[m.DLLName], m)
+		}
+	}
+	return result, nil
 }
 
 // HasPackageVersion checks if we already have entries for a given package+version.
