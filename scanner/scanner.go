@@ -13,28 +13,24 @@ import (
 type Result struct {
 	Filename    string `json:"filename"`
 	Path        string `json:"path"`
-	Type        string `json:"type"`         // "dll" or "jar"
+	Type        string `json:"type"`
 	IsDotNet    bool   `json:"is_dotnet"`
 	Hash        string `json:"hash"`
-	Status      string `json:"status"`       // "Known" or "Unknown"
-	MatchedBy   string `json:"matched_by"`   // "filename", "hash", or ""
-	Source      string `json:"source"`       // "nuget", "maven", or ""
+	Status      string `json:"status"`
+	MatchedBy   string `json:"matched_by"`
+	Source      string `json:"source"`
 	PackageName string `json:"package_name"`
 	Duplicate   bool   `json:"duplicate"`
 }
 
-// FileInfo holds the data collected from walking files,
-// before any database lookup. Hash is computed lazily.
 type FileInfo struct {
 	Filename string `json:"filename"`
 	Path     string `json:"path"`
-	Type     string `json:"type"`      // "dll" or "jar"
+	Type     string `json:"type"`
 	IsDotNet bool   `json:"is_dotnet"`
 	Hash     string `json:"hash"`
 }
 
-// CollectFiles walks target path, detects file types and .NET status.
-// Does NOT compute hashes (use HashFile for that).
 func CollectFiles(target string) ([]FileInfo, error) {
 	var filePaths []string
 
@@ -92,8 +88,6 @@ func CollectFiles(target string) ([]FileInfo, error) {
 	return files, nil
 }
 
-// HashFile computes the appropriate hash for a file.
-// JARs: SHA1 (Maven), DLLs: SHA256 (NuGet).
 func HashFile(f *FileInfo) {
 	if f.Hash != "" {
 		return
@@ -129,7 +123,15 @@ func Scan(store *db.Store, target string) ([]Result, error) {
 			IsDotNet: f.IsDotNet,
 		}
 
-		// Try hash lookup first (exact binary match) — hash on demand
+		if f.Type == "dll" && f.IsDotNet {
+			token, _ := pe.PublicKeyToken(f.Path)
+			if token != "" && pe.IsMicrosoftToken(token) {
+				r.Status = "Known"
+				r.MatchedBy = "runtime"
+				r.Source = "microsoft"
+			}
+		}
+
 		HashFile(f)
 		r.Hash = f.Hash
 
@@ -140,17 +142,18 @@ func Scan(store *db.Store, target string) ([]Result, error) {
 				seenHashes[r.Hash] = true
 			}
 
-			hashMatches, _ := store.LookupByHash(r.Hash, f.Type)
-			if len(hashMatches) > 0 {
-				best := pickBest(hashMatches)
-				r.Status = "Known"
-				r.MatchedBy = "hash"
-				r.Source = best.Source
-				r.PackageName = best.PackageName
+			if r.Status == "" {
+				hashMatches, _ := store.LookupByHash(r.Hash, f.Type)
+				if len(hashMatches) > 0 {
+					best := pickBest(hashMatches)
+					r.Status = "Known"
+					r.MatchedBy = "hash"
+					r.Source = best.Source
+					r.PackageName = best.PackageName
+				}
 			}
 		}
 
-		// Fallback: filename lookup (same name, maybe different version)
 		if r.Status == "" {
 			lookupName := strings.ToLower(f.Filename)
 			matches, err := store.Lookup(lookupName, f.Type)

@@ -14,10 +14,26 @@ func Execute() error {
 }
 
 func init() {
+	scanGroup := &cobra.Group{ID: "scan", Title: "Scanning"}
+	dbGroup := &cobra.Group{ID: "db", Title: "Database"}
+
+	rootCmd.AddGroup(scanGroup, dbGroup)
+
+	scanCmd.GroupID = "scan"
+	extractCmd.GroupID = "scan"
+	updateCmd.GroupID = "scan"
+
+	crawlMavenCmd.GroupID = "db"
+	crawlNugetCmd.GroupID = "db"
+	hashBackfillCmd.GroupID = "db"
+	importCmd.GroupID = "db"
+
 	rootCmd.AddCommand(scanCmd)
+	rootCmd.AddCommand(extractCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(statsCmd)
-	rootCmd.AddCommand(extractCmd)
+	rootCmd.AddCommand(crawlMavenCmd)
+	rootCmd.AddCommand(crawlNugetCmd)
 	rootCmd.AddCommand(hashBackfillCmd)
 	rootCmd.AddCommand(importCmd)
 }

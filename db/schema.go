@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS known_dlls (
     package_name TEXT,
     version TEXT,
     hash TEXT,
-    UNIQUE(dll_name, source, package_name, version)
+    UNIQUE(dll_name, source, version, hash)
 );
 CREATE INDEX IF NOT EXISTS idx_dll_name ON known_dlls(dll_name);
 CREATE INDEX IF NOT EXISTS idx_dll_hash ON known_dlls(hash);
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS known_jars (
     package_name TEXT,
     version TEXT,
     hash TEXT,
-    UNIQUE(dll_name, source, package_name, version)
+    UNIQUE(dll_name, source, version, hash)
 );
 CREATE INDEX IF NOT EXISTS idx_jar_name ON known_jars(dll_name);
 CREATE INDEX IF NOT EXISTS idx_jar_hash ON known_jars(hash);
@@ -59,12 +59,12 @@ func Migrate(db *sql.DB) error {
 		db.Exec("DROP TABLE known_dlls_old")
 	}
 
-	// Migrate unique constraint to include version (legacy known_dlls)
+	// Migrate unique constraint (legacy schemas used package_name in unique key)
 	var tableSql string
 	row := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='known_dlls'`)
 	if row.Scan(&tableSql) == nil {
-		if strings.Contains(tableSql, "UNIQUE(dll_name, source, package_name)") &&
-			!strings.Contains(tableSql, "UNIQUE(dll_name, source, package_name, version)") {
+		needsMigration := strings.Contains(tableSql, "UNIQUE(dll_name, source, package_name")
+		if needsMigration {
 			db.Exec("ALTER TABLE known_dlls RENAME TO known_dlls_migrate")
 			db.Exec(schema)
 			db.Exec(`INSERT OR IGNORE INTO known_jars (dll_name, source, package_name, version, hash)
