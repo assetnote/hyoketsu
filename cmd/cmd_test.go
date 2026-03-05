@@ -104,9 +104,9 @@ func TestNugetPathConstants(t *testing.T) {
 	}
 }
 
-// --- 4. readJSONLFile ---
+// --- 4. streamJSONLFile ---
 
-func TestReadJSONLFile(t *testing.T) {
+func TestStreamJSONLFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
@@ -125,7 +125,10 @@ func TestReadJSONLFile(t *testing.T) {
 	}
 	f.Close()
 
-	got, err := readJSONLFile(path)
+	var got []db.DLLMatch
+	err = streamJSONLFile(path, func(e db.DLLMatch) {
+		got = append(got, e)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,19 +146,22 @@ func TestReadJSONLFile(t *testing.T) {
 	}
 }
 
-func TestReadJSONLFileNotFound(t *testing.T) {
-	_, err := readJSONLFile("/nonexistent/file.jsonl")
+func TestStreamJSONLFileNotFound(t *testing.T) {
+	err := streamJSONLFile("/nonexistent/file.jsonl", func(e db.DLLMatch) {})
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
 }
 
-func TestReadJSONLFileEmpty(t *testing.T) {
+func TestStreamJSONLFileEmpty(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.jsonl")
 	os.WriteFile(path, []byte{}, 0644)
 
-	got, err := readJSONLFile(path)
+	var got []db.DLLMatch
+	err := streamJSONLFile(path, func(e db.DLLMatch) {
+		got = append(got, e)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
