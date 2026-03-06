@@ -254,7 +254,14 @@ func displayResults(results []scanner.Result) error {
 
 func ensureDatabase() error {
 	dbPath := db.DefaultDBPath()
-	if _, err := os.Stat(dbPath); err == nil {
+	if info, err := os.Stat(dbPath); err == nil {
+		if info.Size() == 0 {
+			return fmt.Errorf("database file %s is empty; delete it and run 'hyoketsu update' to re-download", dbPath)
+		}
+		const minDBSize = 10 << 30 // 10 GB
+		if info.Size() < minDBSize {
+			return fmt.Errorf("database file %s is only %d MB which is smaller than expected (>10 GB) and may be corrupt; delete it and run 'hyoketsu update' to re-download", dbPath, info.Size()/(1<<20))
+		}
 		return nil
 	}
 
