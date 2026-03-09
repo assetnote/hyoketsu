@@ -69,13 +69,24 @@ All steps support resuming — re-running skips already completed work.
 # Hide duplicates (by SHA256)
 ./hyoketsu scan --dedup /path/to/binaries
 
-# Scan against a remote hyoketsu server instead of local DB
-./hyoketsu scan --remote http://host:8080 /path/to/binaries
+# Show only filename-matched files
+./hyoketsu scan --filename /path/to/project
+
+# Scan against a remote server (ClickHouse backend)
+./hyoketsu scan --remote http://host:8080 /path/to/project
 ```
 
 `--unknown-only` and `--known-only` are mutually exclusive.
 
-### Extract
+## Server
+
+The `server/` directory contains a ClickHouse-backed HTTP server for centralized scanning. See `docker-compose.yml` to get started.
+
+```
+cd server && go build -o server .
+```
+
+## Extract
 
 Copy unidentified files to a separate directory for decompilation.
 
