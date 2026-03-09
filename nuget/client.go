@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -67,10 +66,6 @@ type Client struct {
 	Workers int
 	store   *db.Store
 
-	throttleMu     sync.Mutex
-	throttleUntil  time.Time
-	consecutive429 atomic.Int64
-
 	requestCount atomic.Int64
 	retryCount   atomic.Int64
 	errorCount   atomic.Int64
@@ -94,14 +89,6 @@ func NewClient(store *db.Store, workers int) *Client {
 
 func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	for attempt := range maxRetries {
-		c.throttleMu.Lock()
-		if wait := time.Until(c.throttleUntil); wait > 0 {
-			c.throttleMu.Unlock()
-			time.Sleep(wait)
-		} else {
-			c.throttleMu.Unlock()
-		}
-
 		c.requestCount.Add(1)
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
@@ -114,7 +101,6 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 		if resp.StatusCode == 429 || resp.StatusCode == 503 {
 			resp.Body.Close()
 			c.retryCount.Add(1)
-			count := c.consecutive429.Add(1)
 
 			wait := backoffDuration(attempt)
 			if ra := resp.Header.Get("Retry-After"); ra != "" {
@@ -122,23 +108,12 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 					wait = time.Duration(secs) * time.Second
 				}
 			}
-			if count > 5 {
-				wait = time.Duration(float64(wait) * math.Min(float64(count)/2, 10))
-			}
-
-			c.throttleMu.Lock()
-			newThrottle := time.Now().Add(wait)
-			if newThrottle.After(c.throttleUntil) {
-				c.throttleUntil = newThrottle
-			}
-			c.throttleMu.Unlock()
 
 			time.Sleep(wait)
 			req = req.Clone(req.Context())
 			continue
 		}
 
-		c.consecutive429.Store(0)
 		return resp, nil
 	}
 	c.errorCount.Add(1)
@@ -396,6 +371,8 @@ func (c *Client) HashBackfill(inDir, outDir string, progress func(done, total in
 		}
 	}
 
+	totalAll := len(pkgSet)
+
 	// Skip already-hashed packages
 	hashedFiles, _ := filepath.Glob(filepath.Join(outDir, "hashed_*.jsonl"))
 	for _, f := range hashedFiles {
@@ -413,7 +390,8 @@ func (c *Client) HashBackfill(inDir, outDir string, progress func(done, total in
 		packages = append(packages, pv)
 	}
 
-	total := len(packages)
+	alreadyDone := totalAll - len(packages)
+	total := totalAll
 	if total == 0 {
 		fmt.Println("No packages to hash")
 		return nil
@@ -457,7 +435,7 @@ func (c *Client) HashBackfill(inDir, outDir string, progress func(done, total in
 				}
 				n := done.Add(1)
 				if progress != nil && n%100 == 0 {
-					progress(int(n), total)
+					progress(alreadyDone+int(n), total)
 				}
 			}
 		}()

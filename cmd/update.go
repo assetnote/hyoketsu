@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"fmt"
-	"sync"
+	"strings"
 
 	"hyoketsu/db"
 	"hyoketsu/maven"
@@ -11,87 +11,122 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	workers   int
-	skipNuget bool
-	skipMaven bool
-)
+var updateBuild bool
+var updateWorkers int
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Crawl NuGet and Maven Central catalogs and update the local database",
+	Short: "Download or build the latest database",
+	Long: `Updates the local database.
+
+By default, downloads the pre-built database from the Assetnote CDN.
+Use --build to crawl package registries and build the database from scratch.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := db.Open(db.DefaultDBPath())
-		if err != nil {
-			return err
+		if updateBuild {
+			return buildFromScratch()
 		}
-		defer store.Close()
-
-		var wg sync.WaitGroup
-		var nugetErr, mavenErr error
-
-		// NuGet crawl — writes JSONL files to data/nuget/crawl/
-		if !skipNuget {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				cursor, err := store.GetCursor()
-				if err != nil {
-					nugetErr = fmt.Errorf("get nuget cursor: %w", err)
-					return
-				}
-				if cursor != "" {
-					fmt.Printf("[NuGet] Resuming from cursor: %s\n", cursor)
-				} else {
-					fmt.Println("[NuGet] Starting full catalog crawl...")
-				}
-
-				client := nuget.NewClient(store, workers)
-				crawlDir := "data/nuget/crawl"
-				newCursor, err := client.Crawl(cursor, crawlDir, func(page, total int) {
-					if total == 0 {
-						fmt.Println("[NuGet] Database is up to date.")
-					}
-				})
-				if err != nil {
-					fmt.Printf("[NuGet] Crawl stopped at cursor %s due to error: %v\n", newCursor, err)
-					nugetErr = err
-					return
-				}
-				fmt.Printf("[NuGet] Crawl complete. JSONL files in %s/\n", crawlDir)
-			}()
-		}
-
-		// Maven crawl — downloads and parses the Lucene index
-		if !skipMaven {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				client := maven.NewClient(store)
-				if err := client.Crawl(func(count int) {}); err != nil {
-					fmt.Printf("[Maven] Error: %v\n", err)
-					mavenErr = err
-				}
-			}()
-		}
-
-		wg.Wait()
-
-		if nugetErr != nil {
-			return nugetErr
-		}
-		if mavenErr != nil {
-			return mavenErr
-		}
-
-		total, _ := store.TotalCount()
-		fmt.Printf("Done. %d entries in database.\n", total)
-		return nil
+		return downloadRemoteDB()
 	},
 }
 
+func downloadRemoteDB() error {
+	dbPath := db.DefaultDBPath()
+
+	date, err := fetchRemoteDBDate()
+	if err != nil {
+		return fmt.Errorf("could not check for remote database: %w", err)
+	}
+
+	fmt.Printf("Pre-built database available (built %s).\n", date)
+	fmt.Printf("Downloading to %s...\n", dbPath)
+	return downloadDatabase(dbPath)
+}
+
+func buildFromScratch() error {
+	store, err := db.Open(db.DefaultDBPath())
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := runMavenCrawl(store); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	nugetClient := nuget.NewClient(store, updateWorkers)
+
+	if err := runNugetCrawl(store, nugetClient); err != nil {
+		return err
+	}
+
+	if err := runNugetHash(nugetClient); err != nil {
+		return err
+	}
+
+	fmt.Println("[NuGet] Importing into database...")
+	if err := runNugetImport(store); err != nil {
+		return err
+	}
+	printNugetPipeline(3)
+
+	total, _ := store.TotalCount()
+	fmt.Println(strings.Repeat("-", 40))
+	fmt.Printf("Done. %d entries in database.\n", total)
+	return nil
+}
+
+func runMavenCrawl(store *db.Store) error {
+	fmt.Println("[Maven] Crawling Maven Central...")
+	mavenClient := maven.NewClient(store)
+	if err := mavenClient.Crawl(func(count int) {
+		fmt.Printf("\r[Maven] %d artifacts indexed", count)
+	}); err != nil {
+		return fmt.Errorf("[Maven] %w", err)
+	}
+	fmt.Println()
+	fmt.Println("[Maven] Done.")
+	return nil
+}
+
+func runNugetCrawl(store *db.Store, client *nuget.Client) error {
+	cursor, err := store.GetCursor()
+	if err != nil {
+		return fmt.Errorf("get nuget cursor: %w", err)
+	}
+	if cursor != "" {
+		fmt.Printf("[NuGet] Resuming from cursor: %s\n", cursor)
+	} else {
+		fmt.Println("[NuGet] Starting full catalog crawl...")
+	}
+
+	newCursor, err := client.Crawl(cursor, nugetCrawlDir, func(page, total int) {
+		if total == 0 {
+			fmt.Println("[NuGet] Catalog is up to date.")
+		}
+	})
+	if err != nil {
+		fmt.Printf("[NuGet] Crawl stopped at cursor %s due to error: %v\n", newCursor, err)
+		return err
+	}
+	fmt.Println("[NuGet] Crawl complete.")
+	printNugetPipeline(1)
+	return nil
+}
+
+func runNugetHash(client *nuget.Client) error {
+	fmt.Println("[NuGet] Downloading nupkgs and computing hashes...")
+	err := client.HashBackfill(nugetCrawlDir, nugetHashDir, func(done, total int) {
+		fmt.Printf("[NuGet Hash] %d/%d packages\n", done, total)
+	})
+	if err != nil {
+		return err
+	}
+	printNugetPipeline(2)
+	return nil
+}
+
 func init() {
-	updateCmd.Flags().IntVar(&workers, "workers", 128, "Number of concurrent workers")
-	updateCmd.Flags().BoolVar(&skipNuget, "skip-nuget", false, "Skip NuGet catalog crawl")
-	updateCmd.Flags().BoolVar(&skipMaven, "skip-maven", false, "Skip Maven Central crawl")
+	updateCmd.Flags().BoolVar(&updateBuild, "build", false, "Build database from scratch instead of downloading")
+	updateCmd.Flags().IntVar(&updateWorkers, "workers", 128, "Number of concurrent workers (used with --build)")
 }

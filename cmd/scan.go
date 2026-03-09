@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -16,13 +17,12 @@ import (
 )
 
 var (
-	jsonOutput    bool
-	unknownOnly   bool
-	dotnetOnly    bool
-	dedup         bool
-	hashOnly      bool
-	filenameOnly  bool
-	remoteURL     string
+	jsonOutput  bool
+	unknownOnly bool
+	knownOnly   bool
+	dotnetOnly  bool
+	dedup       bool
+	remoteURL   string
 )
 
 var scanCmd = &cobra.Command{
@@ -38,6 +38,10 @@ var scanCmd = &cobra.Command{
 }
 
 func scanLocal(target string) error {
+	if err := ensureDatabase(); err != nil {
+		return err
+	}
+
 	store, err := db.Open(db.DefaultDBPath())
 	if err != nil {
 		return err
@@ -109,7 +113,6 @@ func scanRemote(target string) error {
 		return err
 	}
 
-	// Hash everything and send with filenames — server does hash-first, filename-fallback
 	req := make([]remoteLookupFile, len(files))
 	results := make([]scanner.Result, len(files))
 	for i := range files {
@@ -143,7 +146,6 @@ func scanRemote(target string) error {
 		}
 	}
 
-	// Dedup tracking
 	seenHashes := make(map[string]bool)
 	for i := range results {
 		if results[i].Hash != "" {
@@ -159,7 +161,7 @@ func scanRemote(target string) error {
 }
 
 func displayResults(results []scanner.Result) error {
-	// Apply filters
+	unfiltered := results
 	var filtered []scanner.Result
 	for _, r := range results {
 		if unknownOnly && r.Status != "Unknown" {
@@ -171,10 +173,7 @@ func displayResults(results []scanner.Result) error {
 		if dedup && r.Duplicate {
 			continue
 		}
-		if hashOnly && r.MatchedBy != "hash" {
-			continue
-		}
-		if filenameOnly && r.MatchedBy != "filename" {
+		if knownOnly && r.Status != "Known" {
 			continue
 		}
 		filtered = append(filtered, r)
@@ -188,7 +187,7 @@ func displayResults(results []scanner.Result) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "FILENAME\tTYPE\tDOTNET\tSTATUS\tMATCHED\tSOURCE\tPACKAGE\tHASH")
+	fmt.Fprintln(w, "FILENAME\tTYPE\tDOTNET\tSTATUS\tMATCHED BY\tSOURCE\tPACKAGE\tHASH")
 	for _, r := range results {
 		pkg := r.PackageName
 		if pkg == "" {
@@ -199,8 +198,13 @@ func displayResults(results []scanner.Result) error {
 			src = "-"
 		}
 		matched := "-"
-		if r.MatchedBy != "" {
-			matched = r.MatchedBy
+		switch r.MatchedBy {
+		case "hash":
+			matched = "exact hash"
+		case "filename":
+			matched = "name only"
+		case "runtime":
+			matched = "runtime"
 		}
 		dotnet := "-"
 		if r.Type == "dll" {
@@ -218,25 +222,76 @@ func displayResults(results []scanner.Result) error {
 	}
 	w.Flush()
 
-	// Summary
+	fmt.Println()
 	known, unknown := 0, 0
-	for _, r := range results {
+	byHash, byName, byRuntime := 0, 0, 0
+	for _, r := range unfiltered {
 		if r.Status == "Known" {
 			known++
+			switch r.MatchedBy {
+			case "hash":
+				byHash++
+			case "filename":
+				byName++
+			case "runtime":
+				byRuntime++
+			}
 		} else {
 			unknown++
 		}
 	}
-	fmt.Printf("\n%d known, %d unknown out of %d total files\n", known, unknown, known+unknown)
+	total := known + unknown
+	if len(results) < total {
+		fmt.Printf("%d known, %d unknown out of %d total files (showing %d)\n", known, unknown, total, len(results))
+	} else {
+		fmt.Printf("%d known, %d unknown out of %d total files\n", known, unknown, total)
+	}
+	if known > 0 {
+		fmt.Printf("  matched by: %d hash, %d filename, %d runtime\n", byHash, byName, byRuntime)
+	}
 	return nil
+}
+
+func ensureDatabase() error {
+	dbPath := db.DefaultDBPath()
+	if info, err := os.Stat(dbPath); err == nil {
+		if info.Size() == 0 {
+			return fmt.Errorf("database file %s is empty; delete it and run 'hyoketsu update' to re-download", dbPath)
+		}
+		const minDBSize = 10 << 30 // 10 GB
+		if info.Size() < minDBSize {
+			return fmt.Errorf("database file %s is only %d MB which is smaller than expected (>10 GB) and may be corrupt; delete it and run 'hyoketsu update' to re-download", dbPath, info.Size()/(1<<20))
+		}
+		return nil
+	}
+
+	date, err := fetchRemoteDBDate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "No local database found at %s\n", dbPath)
+		fmt.Fprintf(os.Stderr, "Could not check for remote database: %v\n", err)
+		return fmt.Errorf("no database available; run 'hyoketsu update' to download or build one")
+	}
+
+	fmt.Printf("No local database found at %s\n", dbPath)
+	fmt.Printf("A pre-built database from the Assetnote team is available (built %s).\n", date)
+	fmt.Print("Would you like to download it? [y/N]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer != "y" && answer != "yes" {
+		return fmt.Errorf("no database available; run 'hyoketsu update' to download or build one")
+	}
+
+	return downloadDatabase(dbPath)
 }
 
 func init() {
 	scanCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	scanCmd.Flags().BoolVar(&unknownOnly, "unknown-only", false, "Show only unknown files")
+	scanCmd.Flags().BoolVar(&knownOnly, "known-only", false, "Show only known files")
 	scanCmd.Flags().BoolVar(&dotnetOnly, "dotnet-only", false, "Show only .NET assemblies")
 	scanCmd.Flags().BoolVar(&dedup, "dedup", false, "Hide duplicate files (by SHA256 hash)")
-	scanCmd.Flags().BoolVar(&hashOnly, "hash", false, "Show only hash-matched files")
-	scanCmd.Flags().BoolVar(&filenameOnly, "filename", false, "Show only filename-matched files")
 	scanCmd.Flags().StringVar(&remoteURL, "remote", "", "Remote server URL (e.g. http://host:8080)")
+	scanCmd.MarkFlagsMutuallyExclusive("unknown-only", "known-only")
 }
