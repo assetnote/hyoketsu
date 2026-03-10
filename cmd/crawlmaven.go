@@ -12,7 +12,7 @@ var crawlMavenCmd = &cobra.Command{
 	Use:   "crawl-maven",
 	Short: "Crawl Maven Central and insert JARs into the database",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := db.Open(db.DefaultDBPath())
+		store, err := db.Open(getDBPath())
 		if err != nil {
 			return err
 		}

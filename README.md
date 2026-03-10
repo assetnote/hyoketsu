@@ -17,7 +17,14 @@ go build -o hyoketsu .
 
 ## Database
 
-Stored at `~/.hyoketsu/hyoketsu.db`.
+Stored at `~/.hyoketsu/hyoketsu.db` by default. Use the `--db` flag on any command to point to a different database file:
+
+```
+./hyoketsu --db /path/to/hyoketsu.db scan /path/to/binaries
+./hyoketsu --db /path/to/hyoketsu.db stats
+```
+
+When `--db` is specified, the automatic download prompt on first scan is skipped and the given path is used directly.
 
 ### Download pre-built (recommended)
 

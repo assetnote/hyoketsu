@@ -26,7 +26,7 @@ var extractCmd = &cobra.Command{
 		source := args[0]
 		dest := args[1]
 
-		store, err := db.Open(db.DefaultDBPath())
+		store, err := db.Open(getDBPath())
 		if err != nil {
 			return err
 		}
