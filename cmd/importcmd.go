@@ -16,7 +16,7 @@ var importCmd = &cobra.Command{
 	Short: "Step 3/3: Import JSONL into the SQLite database",
 	Long:  "Reads JSONL files from " + nugetCrawlDir + "/ and " + nugetHashDir + "/, merges hashes, and bulk-inserts into SQLite",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := db.Open(db.DefaultDBPath())
+		store, err := db.Open(getDBPath())
 		if err != nil {
 			return err
 		}

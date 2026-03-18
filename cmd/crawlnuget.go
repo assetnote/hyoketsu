@@ -15,7 +15,7 @@ var crawlNugetCmd = &cobra.Command{
 	Use:   "crawl-nuget",
 	Short: "Step 1/3: Crawl NuGet catalog to JSONL",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := db.Open(db.DefaultDBPath())
+		store, err := db.Open(getDBPath())
 		if err != nil {
 			return err
 		}

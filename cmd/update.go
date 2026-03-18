@@ -30,7 +30,7 @@ Use --build to crawl package registries and build the database from scratch.`,
 }
 
 func downloadRemoteDB() error {
-	dbPath := db.DefaultDBPath()
+	targetPath := getDBPath()
 
 	date, err := fetchRemoteDBDate()
 	if err != nil {
@@ -38,12 +38,12 @@ func downloadRemoteDB() error {
 	}
 
 	fmt.Printf("Pre-built database available (built %s).\n", date)
-	fmt.Printf("Downloading to %s...\n", dbPath)
-	return downloadDatabase(dbPath)
+	fmt.Printf("Downloading to %s...\n", targetPath)
+	return downloadDatabase(targetPath)
 }
 
 func buildFromScratch() error {
-	store, err := db.Open(db.DefaultDBPath())
+	store, err := db.Open(getDBPath())
 	if err != nil {
 		return err
 	}

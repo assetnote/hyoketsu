@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"hyoketsu/db"
+
 	"github.com/spf13/cobra"
 )
+
+var dbPath string
 
 var rootCmd = &cobra.Command{
 	Use:   "hyoketsu",
@@ -13,7 +17,16 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
+func getDBPath() string {
+	if dbPath != "" {
+		return dbPath
+	}
+	return db.DefaultDBPath()
+}
+
 func init() {
+	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Path to hyoketsu database file (skips auto-download)")
+
 	scanGroup := &cobra.Group{ID: "scan", Title: "Scanning"}
 	dbGroup := &cobra.Group{ID: "db", Title: "Database"}
 

@@ -38,11 +38,13 @@ var scanCmd = &cobra.Command{
 }
 
 func scanLocal(target string) error {
-	if err := ensureDatabase(); err != nil {
-		return err
+	if dbPath == "" {
+		if err := ensureDatabase(); err != nil {
+			return err
+		}
 	}
 
-	store, err := db.Open(db.DefaultDBPath())
+	store, err := db.Open(getDBPath())
 	if err != nil {
 		return err
 	}
@@ -253,26 +255,26 @@ func displayResults(results []scanner.Result) error {
 }
 
 func ensureDatabase() error {
-	dbPath := db.DefaultDBPath()
-	if info, err := os.Stat(dbPath); err == nil {
+	defaultPath := db.DefaultDBPath()
+	if info, err := os.Stat(defaultPath); err == nil {
 		if info.Size() == 0 {
-			return fmt.Errorf("database file %s is empty; delete it and run 'hyoketsu update' to re-download", dbPath)
+			return fmt.Errorf("database file %s is empty; delete it and run 'hyoketsu update' to re-download", defaultPath)
 		}
 		const minDBSize = 10 << 30 // 10 GB
 		if info.Size() < minDBSize {
-			return fmt.Errorf("database file %s is only %d MB which is smaller than expected (>10 GB) and may be corrupt; delete it and run 'hyoketsu update' to re-download", dbPath, info.Size()/(1<<20))
+			return fmt.Errorf("database file %s is only %d MB which is smaller than expected (>10 GB) and may be corrupt; delete it and run 'hyoketsu update' to re-download", defaultPath, info.Size()/(1<<20))
 		}
 		return nil
 	}
 
 	date, err := fetchRemoteDBDate()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "No local database found at %s\n", dbPath)
+		fmt.Fprintf(os.Stderr, "No local database found at %s\n", defaultPath)
 		fmt.Fprintf(os.Stderr, "Could not check for remote database: %v\n", err)
 		return fmt.Errorf("no database available; run 'hyoketsu update' to download or build one")
 	}
 
-	fmt.Printf("No local database found at %s\n", dbPath)
+	fmt.Printf("No local database found at %s\n", defaultPath)
 	fmt.Printf("A pre-built database from the Assetnote team is available (built %s).\n", date)
 	fmt.Print("Would you like to download it? [y/N]: ")
 
@@ -283,7 +285,7 @@ func ensureDatabase() error {
 		return fmt.Errorf("no database available; run 'hyoketsu update' to download or build one")
 	}
 
-	return downloadDatabase(dbPath)
+	return downloadDatabase(defaultPath)
 }
 
 func init() {
