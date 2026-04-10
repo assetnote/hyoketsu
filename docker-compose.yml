@@ -4,7 +4,7 @@ services:
     image: clickhouse/clickhouse-server:latest
     container_name: hyoketsu-db
     environment:
-      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     networks:
