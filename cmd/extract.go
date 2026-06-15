@@ -23,8 +23,8 @@ var extractCmd = &cobra.Command{
 	Short: "Copy unknown files to a separate directory for decompilation",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		source := args[0]
-		dest := args[1]
+		source := cleanPath(args[0])
+		dest := cleanPath(args[1])
 
 		store, err := db.Open(getDBPath())
 		if err != nil {

@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"path/filepath"
+	"strings"
+
 	"hyoketsu/db"
 
 	"github.com/spf13/cobra"
@@ -15,6 +18,17 @@ var rootCmd = &cobra.Command{
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// cleanPath strips stray double-quotes and normalises separators on Windows.
+// PowerShell wraps space-containing paths in double-quotes when invoking a
+// native executable. A trailing backslash (e.g. "C:\path with spaces\") then
+// escapes the closing quote, so CommandLineToArgvW delivers the path with a
+// literal trailing " character. Trimming quotes and calling filepath.Clean
+// produces the intended path regardless of how the shell passed it.
+func cleanPath(p string) string {
+	p = strings.Trim(p, `"`)
+	return filepath.Clean(p)
 }
 
 func getDBPath() string {
