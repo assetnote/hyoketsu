@@ -30,10 +30,11 @@ var scanCmd = &cobra.Command{
 	Short: "Identify DLLs and JARs against the known database",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		target := cleanPath(args[0])
 		if remoteURL != "" {
-			return scanRemote(args[0])
+			return scanRemote(target)
 		}
-		return scanLocal(args[0])
+		return scanLocal(target)
 	},
 }
 
