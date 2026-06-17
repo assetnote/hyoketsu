@@ -1,17 +1,35 @@
 services:
+  # The ClickHouse Database
   clickhouse:
     image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8123:8123"
-      - "9000:9000"
+    container_name: hyoketsu-db
     environment:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - hyoketsu-internal
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
+
+  # The Hyoketsu API Server
+  server:
+    build: ./server/
+    container_name: hyoketsu-server
+    ports:
+      - "8080:8080"
+    networks:
+      - hyoketsu-internal
+    depends_on:
+      - clickhouse
+    restart: on-failure:5
+    command: ["-listen", ":8080", "-clickhouse", "clickhouse://clickhouse:9000/default"]
+
+networks:
+  hyoketsu-internal:
+    driver: bridge
 
 volumes:
   clickhouse_data:
